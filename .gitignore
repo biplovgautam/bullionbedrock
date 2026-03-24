@@ -1,0 +1,16 @@
+node_modules
+.next
+dist
+.env
+.env.*
+!.env.example
+coverage
+*.log
+.venv
+__pycache__
+.pytest_cache
+.DS_Store
+frontend/models/6e48z1kc7r40-bugatti.zip
+frontend/models/gold_bar_single.zip
+frontend/models/bugatti/bugatti.blend
+frontend/models/bugatti/bugatti.obj
