@@ -24,6 +24,9 @@ async def websocket_worker(
     loop = asyncio.get_running_loop()
     last_data_at = 0.0
 
+    async def publish_payload(payload: bytes) -> None:
+        await redis_client.publish(channel, payload)
+
     async def poll_prices(td_client: TDClient) -> None:
         nonlocal last_data_at
         while True:
@@ -52,7 +55,7 @@ async def websocket_worker(
         payload = orjson.dumps(event)
         if on_payload is not None:
             on_payload(payload)
-        loop.call_soon_threadsafe(asyncio.create_task, redis_client.publish(channel, payload))
+        loop.call_soon_threadsafe(asyncio.create_task, publish_payload(payload))
 
     backoff = 1
     while True:

@@ -1,29 +1,33 @@
 import { FastifyPluginAsync } from "fastify";
-import { ratioUpdateSchema, RatioUpdate } from "../schemas/ratio.schema.js";
+
+type WsClient = { send: (data: string) => void; on: (event: string, cb: () => void) => void };
+
+const clients = new Set<WsClient>();
+let subscribed = false;
 
 const wsRoute: FastifyPluginAsync = async (fastify) => {
+  const redis = fastify.redisSubscriber;
+
+  const onMessage = (_channel: string, payload: string) => {
+    for (const client of clients) {
+      client.send(payload);
+    }
+  };
+
   fastify.get(
-    "/ws",
+    "/ws/stream",
     { websocket: true },
     (connection) => {
-      const onMessage = (_channel: string, payload: string) => {
-        try {
-          const data = JSON.parse(payload) as RatioUpdate;
-          const valid = fastify.validatorCompiler?.({ schema: ratioUpdateSchema } as any);
-          if (valid) {
-            connection.send(JSON.stringify(data));
-          }
-        } catch {
-          // no-op malformed payload
-        }
-      };
+      clients.add(connection as WsClient);
 
-      const redis = fastify.redisSubscriber;
-      redis.subscribe("ratio_update");
-      redis.on("message", onMessage);
+      if (!subscribed) {
+        redis.subscribe("bullion_ticks");
+        redis.on("message", onMessage);
+        subscribed = true;
+      }
 
       connection.on("close", () => {
-        redis.off("message", onMessage);
+        clients.delete(connection as WsClient);
       });
     }
   );

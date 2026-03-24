@@ -9,7 +9,7 @@ load_dotenv(BASE_DIR / ".env")
 ENV = os.getenv("ENV", "dev")
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY", "")
-REDIS_CHANNEL = os.getenv("REDIS_CHANNEL", "bullion_prices_raw")
+REDIS_CHANNEL = os.getenv("REDIS_CHANNEL", "bullion_ticks")
 SYMBOLS = [
     symbol.strip()
     for symbol in os.getenv("TWELVEDATA_SYMBOLS", "XAU/USD,XAG/USD").split(",")
