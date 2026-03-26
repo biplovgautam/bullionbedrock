@@ -3,10 +3,10 @@ import logging
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime, timezone
 
-import redis.asyncio as redis
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+import orjson
 from app.core import config
 from app.endpoints import health_router, prices_router
 from app.services.stream_service import websocket_worker
@@ -14,15 +14,18 @@ from app.services.stream_service import websocket_worker
 logger = logging.getLogger("ai-service")
 
 
-def store_latest_payload(app: FastAPI):
-    def _store(payload: bytes) -> None:
+def update_price_state(app: FastAPI):
+    def _update(payload: bytes) -> None:
         try:
-            app.state.latest_payload = payload.decode()
-        except Exception:
-            app.state.latest_payload = payload
-        app.state.latest_payload_at = datetime.now(timezone.utc).isoformat()
+            data = orjson.loads(payload)
+            symbol = data.get("symbol")
+            if symbol:
+                app.state.prices[symbol] = data
+                app.state.prices_at[symbol] = datetime.now(timezone.utc).isoformat()
+        except Exception as exc:
+            logger.error("Error updating price state: %s", exc)
 
-    return _store
+    return _update
 
 
 def store_status(app: FastAPI):
@@ -35,22 +38,14 @@ def store_status(app: FastAPI):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    redis_client = redis.Redis.from_url(
-        config.REDIS_URL,
-        max_connections=50,
-        decode_responses=False,
-    )
-    app.state.redis = redis_client
-    app.state.latest_payload = None
-    app.state.latest_payload_at = None
+    app.state.prices = {symbol: None for symbol in config.SYMBOLS}
+    app.state.prices_at = {symbol: None for symbol in config.SYMBOLS}
     app.state.stream_status = "starting"
     app.state.stream_status_at = None
     worker = asyncio.create_task(
         websocket_worker(
-            redis_client=redis_client,
             api_key=config.TWELVEDATA_API_KEY,
-            channel=config.REDIS_CHANNEL,
-            on_payload=store_latest_payload(app),
+            on_payload=update_price_state(app),
             on_status=store_status(app),
             symbols=config.SYMBOLS,
         )
@@ -61,8 +56,6 @@ async def lifespan(app: FastAPI):
         worker.cancel()
         with suppress(asyncio.CancelledError):
             await worker
-        await redis_client.close()
-        await redis_client.connection_pool.disconnect()
 
 
 app = FastAPI(title="AI Bullion Service", version="0.2.0", lifespan=lifespan)
