@@ -17,6 +17,9 @@ from app.models.prices import PriceUpdate
 logger = logging.getLogger("ai-service")
 
 
+import redis.asyncio as aioredis
+
+
 def store_status(app: FastAPI):
     def _store(status: str) -> None:
         app.state.stream_status = status
@@ -34,16 +37,42 @@ async def lifespan(app: FastAPI):
     app.state.primary_healthy = True
     app.state.stream_status = "starting"
     app.state.stream_status_at = None
+    app.state.loop = asyncio.get_running_loop()
+
+    # Global Redis Connection
+    redis = aioredis.from_url(config.REDIS_URL, decode_responses=False)
+    app.state.redis = redis
 
     manager = FailoverManager(app)
 
+    async def publish_update(update: PriceUpdate):
+        try:
+            payload = orjson.dumps(update.dict())
+            # Background cache setting & broadcasting
+            await redis.set(f"price:{update.symbol}", payload)
+            await redis.publish(config.REDIS_CHANNEL, payload)
+        except Exception as e:
+            logger.error("Redis publish error: %s", e)
+
     def on_primary_update(update: PriceUpdate):
+        logger.info("Primary update: %s", update.symbol)
         app.state.prices_primary[update.symbol] = update
         manager.record_update("twelvedata")
+        # Ensure thread-safe async scheduling
+        if app.state.provider_mode == "primary":
+            app.state.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(publish_update(update))
+            )
 
     def on_secondary_update(update: PriceUpdate):
+        logger.info("Secondary update: %s", update.symbol)
         app.state.prices_secondary[update.symbol] = update
         manager.record_update("finnhub")
+        # Finnhub worker might also be in a different thread depending on the lib
+        if app.state.provider_mode == "secondary":
+            app.state.loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(publish_update(update))
+            )
 
     # Start Workers
     primary_worker = asyncio.create_task(

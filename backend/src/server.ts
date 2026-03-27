@@ -5,6 +5,7 @@ import helmet from "@fastify/helmet";
 import websocket from "@fastify/websocket";
 import redisPlugin from "./plugins/redis.js";
 import healthRoute from "./routes/health.js";
+import pricesRoute from "./routes/prices.js";
 import wsRoute from "./routes/ws.js";
 
 const server = Fastify({ logger: true });
@@ -16,6 +17,7 @@ await server.register(helmet);
 await server.register(websocket);
 await server.register(redisPlugin);
 await server.register(healthRoute, { prefix: "/api" });
+await server.register(pricesRoute, { prefix: "/api" });
 await server.register(wsRoute);
 
 const port = Number(process.env.PORT ?? 4000);

@@ -34,6 +34,7 @@ async def websocket_worker(
 
             for symbol in symbols:
                 try:
+                    logger.debug("Polling TwelveData for %s", symbol)
                     # Polling is also silent if in secondary mode
                     if getattr(app.state, "provider_mode", "primary") == "secondary":
                         result = await asyncio.to_thread(td_client.price, symbol=symbol)
@@ -63,6 +64,7 @@ async def websocket_worker(
             return
         
         if event_type == "price":
+            logger.debug("TwelveData Price Event: %s", event)
             nonlocal last_data_at
             last_data_at = time.time()
             symbol = event.get("symbol")
@@ -79,11 +81,13 @@ async def websocket_worker(
                     on_update(update)
             return
 
-        if event_type == "subscribe-status" and event.get("status") == "warning":
-            if getattr(app.state, "provider_mode", "primary") == "primary":
-                logger.warning("TwelveData subscribe warning: %s", event)
-                if on_status is not None:
-                    on_status("warning")
+        if event_type == "subscribe-status":
+            logger.debug("TwelveData subscribe status: %s", event)
+            if event.get("status") == "warning":
+                if getattr(app.state, "provider_mode", "primary") == "primary":
+                    logger.warning("TwelveData subscribe warning: %s", event)
+                    if on_status is not None:
+                        on_status("warning")
             return
 
     backoff = 1
@@ -93,8 +97,9 @@ async def websocket_worker(
         current_mode = getattr(app.state, "provider_mode", "primary")
         try:
             td = TDClient(apikey=api_key)
-            ws = td.websocket(symbols=symbols, on_event=on_event, log_level="info")
+            ws = td.websocket(on_event=on_event, log_level="info")
             ws.connect()
+            ws.subscribe(symbols)
             
             if current_mode == "primary" and on_status is not None:
                 on_status("connected")
