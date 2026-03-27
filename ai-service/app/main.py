@@ -10,22 +10,11 @@ import orjson
 from app.core import config
 from app.endpoints import health_router, prices_router
 from app.services.stream_service import websocket_worker
+from app.services.finnhub_service import finnhub_worker
+from app.services.failover_manager import FailoverManager
+from app.models.prices import PriceUpdate
 
 logger = logging.getLogger("ai-service")
-
-
-def update_price_state(app: FastAPI):
-    def _update(payload: bytes) -> None:
-        try:
-            data = orjson.loads(payload)
-            symbol = data.get("symbol")
-            if symbol:
-                app.state.prices[symbol] = data
-                app.state.prices_at[symbol] = datetime.now(timezone.utc).isoformat()
-        except Exception as exc:
-            logger.error("Error updating price state: %s", exc)
-
-    return _update
 
 
 def store_status(app: FastAPI):
@@ -38,27 +27,57 @@ def store_status(app: FastAPI):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    app.state.prices = {symbol: None for symbol in config.SYMBOLS}
-    app.state.prices_at = {symbol: None for symbol in config.SYMBOLS}
+    # Initialize State
+    app.state.prices_primary = {symbol: None for symbol in config.SYMBOLS}
+    app.state.prices_secondary = {symbol: None for symbol in config.SYMBOLS}
+    app.state.provider_mode = "primary"  # "primary" or "secondary"
+    app.state.primary_healthy = True
     app.state.stream_status = "starting"
     app.state.stream_status_at = None
-    worker = asyncio.create_task(
+
+    manager = FailoverManager(app)
+
+    def on_primary_update(update: PriceUpdate):
+        app.state.prices_primary[update.symbol] = update
+        manager.record_update("twelvedata")
+
+    def on_secondary_update(update: PriceUpdate):
+        app.state.prices_secondary[update.symbol] = update
+        manager.record_update("finnhub")
+
+    # Start Workers
+    primary_worker = asyncio.create_task(
         websocket_worker(
+            app=app,
             api_key=config.TWELVEDATA_API_KEY,
-            on_payload=update_price_state(app),
+            on_update=on_primary_update,
             on_status=store_status(app),
             symbols=config.SYMBOLS,
         )
     )
+    
+    secondary_worker = asyncio.create_task(
+        finnhub_worker(
+            api_key=config.FINNHUB_API_KEY,
+            on_update=on_secondary_update,
+            symbols=config.SYMBOLS,
+        )
+    )
+
+    manager_task = asyncio.create_task(manager.run_loop())
+
     try:
         yield
     finally:
-        worker.cancel()
+        primary_worker.cancel()
+        secondary_worker.cancel()
+        manager_task.cancel()
+        
         with suppress(asyncio.CancelledError):
-            await worker
+            await asyncio.gather(primary_worker, secondary_worker, manager_task)
 
 
-app = FastAPI(title="AI Bullion Service", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="AI Bullion Service", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if config.cors_allow_all() else config.ALLOWED_ORIGINS,
